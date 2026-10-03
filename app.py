@@ -1,4 +1,5 @@
 import os
+import hmac
 import base64
 import numpy as np
 import pandas as pd
@@ -14,32 +15,138 @@ from openai import OpenAI
 
 load_dotenv()
 
-API_KEY = os.getenv("OPENAI_API_KEY")
-
-if not API_KEY:
-    st.error(
-        "No se encontró OPENAI_API_KEY en el archivo .env"
-    )
-    st.stop()
-
-client = OpenAI(api_key=API_KEY)
-
-# Modelo que ya probaste y te funciona
-MODELO = "gpt-5.6-luna"
-
-# Gravedad
-G = 9.81
-
-# Límites para archivos
-MAX_ARCHIVOS = 5
-MAX_TOTAL_MB = 20
-
-
 st.set_page_config(
     page_title="Bombas y NPSH",
     page_icon="💧",
     layout="wide"
 )
+
+
+# ============================================================
+# LEER SECRETOS
+# ============================================================
+
+def obtener_secreto(nombre):
+    """
+    Busca primero una variable en .env.
+    Si no existe, intenta obtenerla desde
+    Streamlit Secrets.
+    """
+
+    valor = os.getenv(nombre)
+
+    if valor:
+        return valor
+
+    try:
+        return st.secrets[nombre]
+    except Exception:
+        return None
+
+
+API_KEY = obtener_secreto("OPENAI_API_KEY")
+APP_PASSWORD = obtener_secreto("APP_PASSWORD")
+
+
+# ============================================================
+# PROTECCIÓN CON CONTRASEÑA
+# ============================================================
+
+if not APP_PASSWORD:
+
+    st.error(
+        "No se configuró APP_PASSWORD. "
+        "Agrégala en .env o en Streamlit Secrets."
+    )
+
+    st.stop()
+
+
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+
+
+if not st.session_state.autenticado:
+
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 520px;
+            padding-top: 8rem;
+        }
+
+        #MainMenu {
+            visibility: hidden;
+        }
+
+        footer {
+            visibility: hidden;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.title("🔐 Bombas Centrífugas y NPSH")
+
+    st.caption(
+        "Aplicación de ingeniería hidráulica y sanitaria"
+    )
+
+    st.write(
+        "Ingresa la contraseña para acceder a la aplicación."
+    )
+
+    clave_ingresada = st.text_input(
+        "Contraseña",
+        type="password",
+        placeholder="Escribe la contraseña..."
+    )
+
+    if st.button(
+        "🔓 Ingresar",
+        type="primary",
+        use_container_width=True
+    ):
+
+        if hmac.compare_digest(
+            clave_ingresada,
+            str(APP_PASSWORD)
+        ):
+
+            st.session_state.autenticado = True
+
+            st.rerun()
+
+        else:
+
+            st.error("Contraseña incorrecta.")
+
+    st.stop()
+
+
+# ============================================================
+# OPENAI
+# ============================================================
+
+if API_KEY:
+
+    client = OpenAI(
+        api_key=API_KEY
+    )
+
+else:
+
+    client = None
+
+
+MODELO = "gpt-5.6-luna"
+
+G = 9.81
+
+MAX_ARCHIVOS = 5
+MAX_TOTAL_MB = 20
 
 
 # ============================================================
@@ -81,16 +188,6 @@ st.markdown(
 # ============================================================
 
 def presion_atmosferica(altura_m):
-    """
-    Presión atmosférica aproximada según
-    atmósfera estándar.
-
-    Entrada:
-        altura_m -> metros sobre el nivel del mar
-
-    Salida:
-        presión atmosférica en kPa
-    """
 
     return (
         101.325
@@ -99,12 +196,6 @@ def presion_atmosferica(altura_m):
 
 
 def presion_vapor_agua(temperatura_c):
-    """
-    Presión de vapor del agua mediante
-    ecuación de Antoine.
-
-    Devuelve kPa.
-    """
 
     A = 8.07131
     B = 1730.63
@@ -115,12 +206,10 @@ def presion_vapor_agua(temperatura_c):
         - B / (C + temperatura_c)
     )
 
-    p_kpa = (
+    return (
         p_mmhg
         * 0.133322
     )
-
-    return p_kpa
 
 
 # ============================================================
@@ -226,12 +315,10 @@ def es_imagen(nombre):
 # ============================================================
 
 if "mensajes" not in st.session_state:
-
     st.session_state.mensajes = []
 
 
 if "uploader_key" not in st.session_state:
-
     st.session_state.uploader_key = 0
 
 
@@ -257,6 +344,22 @@ with st.sidebar:
         "➕ Nuevo chat",
         use_container_width=True
     ):
+
+        st.session_state.mensajes = []
+
+        st.rerun()
+
+
+    # --------------------------------------------------------
+    # CERRAR SESIÓN
+    # --------------------------------------------------------
+
+    if st.button(
+        "🔒 Cerrar sesión",
+        use_container_width=True
+    ):
+
+        st.session_state.autenticado = False
 
         st.session_state.mensajes = []
 
@@ -333,9 +436,8 @@ with st.sidebar:
 
 
         st.warning(
-            "Si mantienes los archivos adjuntos, "
-            "pueden volver a enviarse a la API en "
-            "otra consulta y generar consumo adicional."
+            "Los archivos pueden aumentar "
+            "el consumo de la API."
         )
 
 
@@ -427,6 +529,14 @@ with tab_chat:
     )
 
 
+    if not API_KEY:
+
+        st.error(
+            "No se encontró OPENAI_API_KEY. "
+            "El asistente IA está deshabilitado."
+        )
+
+
     # --------------------------------------------------------
     # MOSTRAR HISTORIAL
     # --------------------------------------------------------
@@ -453,12 +563,22 @@ with tab_chat:
 
     if pregunta:
 
-        # ----------------------------------------------------
-        # VALIDAR ARCHIVOS
-        # ----------------------------------------------------
+        if not API_KEY:
+
+            st.error(
+                "Debes configurar OPENAI_API_KEY "
+                "para utilizar el asistente."
+            )
+
+            st.stop()
+
 
         archivos_enviar = []
 
+
+        # ----------------------------------------------------
+        # VALIDAR ARCHIVOS
+        # ----------------------------------------------------
 
         if (
             archivos
@@ -538,7 +658,7 @@ with tab_chat:
 
 
         # ----------------------------------------------------
-        # HISTORIAL RECIENTE
+        # HISTORIAL
         # ----------------------------------------------------
 
         entrada = []
@@ -632,7 +752,7 @@ with tab_chat:
 
 
         # ----------------------------------------------------
-        # OPENAI
+        # RESPUESTA OPENAI
         # ----------------------------------------------------
 
         with st.chat_message(
@@ -669,7 +789,7 @@ with tab_chat:
                             "de NPSH requerido (NPSHr). "
 
                             "Cuando hagas un cálculo "
-                            "muestra: datos, fórmula, "
+                            "muestra datos, fórmula, "
                             "sustitución, unidades y "
                             "resultado final. "
 
@@ -689,8 +809,7 @@ with tab_chat:
                             "un documento, basa la "
                             "respuesta en ese documento. "
 
-                            "No inventes información "
-                            "que no esté disponible."
+                            "No inventes información."
                         ),
 
                         input=entrada,
@@ -762,12 +881,6 @@ with tab_npsh:
     )
 
 
-    st.write(
-        "Para un depósito cuya superficie "
-        "se encuentra a una presión conocida:"
-    )
-
-
     st.latex(
         r"NPSH_a="
         r"\frac{P_{atm}+P_g-P_v}{\rho g}"
@@ -787,7 +900,7 @@ with tab_npsh:
 
 
     # --------------------------------------------------------
-    # DATOS AMBIENTALES
+    # CONDICIONES DEL LÍQUIDO
     # --------------------------------------------------------
 
     with col1:
@@ -926,17 +1039,13 @@ with tab_npsh:
         use_container_width=True
     ):
 
-        patm = (
-            presion_atmosferica(
-                altitud
-            )
+        patm = presion_atmosferica(
+            altitud
         )
 
 
-        pv = (
-            presion_vapor_agua(
-                temperatura
-            )
+        pv = presion_vapor_agua(
+            temperatura
         )
 
 
@@ -972,10 +1081,6 @@ with tab_npsh:
             + margen_seguridad
         )
 
-
-        # ----------------------------------------------------
-        # RESULTADOS
-        # ----------------------------------------------------
 
         st.divider()
 
@@ -1022,10 +1127,6 @@ with tab_npsh:
             f"**{cabeza_presiones:.2f} m**"
         )
 
-
-        # ----------------------------------------------------
-        # VERIFICACIÓN
-        # ----------------------------------------------------
 
         if (
             npsha
@@ -1104,7 +1205,7 @@ with tab_npsh:
 
 
 # ============================================================
-# 3. POTENCIA DE LA BOMBA
+# 3. POTENCIA
 # ============================================================
 
 with tab_potencia:
@@ -1339,10 +1440,6 @@ with tab_curvas:
     )
 
 
-    # --------------------------------------------------------
-    # TABLA INICIAL
-    # --------------------------------------------------------
-
     datos_iniciales = pd.DataFrame(
         {
             "Q (L/s)": [
@@ -1465,8 +1562,7 @@ with tab_curvas:
 
         k_sistema = st.number_input(
 
-            "Coeficiente K "
-            "con Q en L/s",
+            "Coeficiente K con Q en L/s",
 
             min_value=0.0,
 
@@ -1491,7 +1587,6 @@ with tab_curvas:
         use_container_width=True
     ):
 
-        # Convertir a números
         datos_num = (
             datos
             .apply(
@@ -1502,7 +1597,6 @@ with tab_curvas:
         )
 
 
-        # Ordenar por caudal
         datos_num = (
             datos_num
             .sort_values(
@@ -1523,10 +1617,6 @@ with tab_curvas:
 
             st.stop()
 
-
-        # ----------------------------------------------------
-        # EXTRAER DATOS
-        # ----------------------------------------------------
 
         Q = (
             datos_num[
@@ -1630,7 +1720,6 @@ with tab_curvas:
             d2 = diferencia[i + 1]
 
 
-            # Punto exacto
             if d1 == 0:
 
                 q_operacion = (
@@ -1640,7 +1729,6 @@ with tab_curvas:
                 break
 
 
-            # Cruce entre curvas
             if (
                 d1 * d2 < 0
             ):
@@ -1699,7 +1787,7 @@ with tab_curvas:
 
 
         # ----------------------------------------------------
-        # RESULTADO PUNTO DE OPERACIÓN
+        # PUNTO DE OPERACIÓN
         # ----------------------------------------------------
 
         if (
@@ -1929,10 +2017,6 @@ with tab_curvas:
             f"{npshr_bep:.2f} m"
         )
 
-
-        # ----------------------------------------------------
-        # COMPARAR OPERACIÓN CON BEP
-        # ----------------------------------------------------
 
         if (
             q_operacion
